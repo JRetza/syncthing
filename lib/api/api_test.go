@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,6 +32,7 @@ import (
 	"github.com/syncthing/syncthing/lib/model"
 	"github.com/syncthing/syncthing/lib/protocol"
 	"github.com/syncthing/syncthing/lib/sync"
+	"github.com/syncthing/syncthing/lib/tlsutil"
 	"github.com/syncthing/syncthing/lib/ur"
 	"github.com/thejerf/suture"
 )
@@ -52,7 +54,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestCSRFToken(t *testing.T) {
-	defer os.Remove(token)
+	t.Parallel()
 
 	max := 250
 	int := 5
@@ -61,11 +63,13 @@ func TestCSRFToken(t *testing.T) {
 		int = 2
 	}
 
-	t1 := newCsrfToken()
-	t2 := newCsrfToken()
+	m := newCsrfManager("unique", "prefix", config.GUIConfiguration{}, nil, "")
 
-	t3 := newCsrfToken()
-	if !validCsrfToken(t3) {
+	t1 := m.newToken()
+	t2 := m.newToken()
+
+	t3 := m.newToken()
+	if !m.validToken(t3) {
 		t.Fatal("t3 should be valid")
 	}
 
@@ -73,27 +77,29 @@ func TestCSRFToken(t *testing.T) {
 		if i%int == 0 {
 			// t1 and t2 should remain valid by virtue of us checking them now
 			// and then.
-			if !validCsrfToken(t1) {
+			if !m.validToken(t1) {
 				t.Fatal("t1 should be valid at iteration", i)
 			}
-			if !validCsrfToken(t2) {
+			if !m.validToken(t2) {
 				t.Fatal("t2 should be valid at iteration", i)
 			}
 		}
 
 		// The newly generated token is always valid
-		t4 := newCsrfToken()
-		if !validCsrfToken(t4) {
+		t4 := m.newToken()
+		if !m.validToken(t4) {
 			t.Fatal("t4 should be valid at iteration", i)
 		}
 	}
 
-	if validCsrfToken(t3) {
+	if m.validToken(t3) {
 		t.Fatal("t3 should have expired by now")
 	}
 }
 
 func TestStopAfterBrokenConfig(t *testing.T) {
+	t.Parallel()
+
 	cfg := config.Configuration{
 		GUI: config.GUIConfiguration{
 			RawAddress: "127.0.0.1:0",
@@ -134,6 +140,8 @@ func TestStopAfterBrokenConfig(t *testing.T) {
 }
 
 func TestAssetsDir(t *testing.T) {
+	t.Parallel()
+
 	// For any given request to $FILE, we should return the first found of
 	//  - assetsdir/$THEME/$FILE
 	//  - compiled in asset $THEME/$FILE
@@ -208,6 +216,8 @@ func expectURLToContain(t *testing.T, url, exp string) {
 }
 
 func TestDirNames(t *testing.T) {
+	t.Parallel()
+
 	names := dirNames("testdata")
 	expected := []string{"config", "default", "foo", "testfolder"}
 	if diff, equal := messagediff.PrettyDiff(expected, names); !equal {
@@ -224,6 +234,8 @@ type httpTestCase struct {
 }
 
 func TestAPIServiceRequests(t *testing.T) {
+	t.Parallel()
+
 	const testAPIKey = "foobarbaz"
 	cfg := new(mockedConfig)
 	cfg.gui.APIKey = testAPIKey
@@ -434,6 +446,8 @@ func testHTTPRequest(t *testing.T, baseURL string, tc httpTestCase, apikey strin
 }
 
 func TestHTTPLogin(t *testing.T) {
+	t.Parallel()
+
 	cfg := new(mockedConfig)
 	cfg.gui.User = "üser"
 	cfg.gui.Password = "$2a$10$IdIZTxTg/dCNuNEGlmLynOjqg4B1FvDKuIV5e0BB3pnWVHNb8.GSq" // bcrypt of "räksmörgås" in UTF-8
@@ -541,6 +555,8 @@ func startHTTP(cfg *mockedConfig) (string, error) {
 }
 
 func TestCSRFRequired(t *testing.T) {
+	t.Parallel()
+
 	const testAPIKey = "foobarbaz"
 	cfg := new(mockedConfig)
 	cfg.gui.APIKey = testAPIKey
@@ -614,6 +630,8 @@ func TestCSRFRequired(t *testing.T) {
 }
 
 func TestRandomString(t *testing.T) {
+	t.Parallel()
+
 	const testAPIKey = "foobarbaz"
 	cfg := new(mockedConfig)
 	cfg.gui.APIKey = testAPIKey
@@ -663,6 +681,8 @@ func TestRandomString(t *testing.T) {
 }
 
 func TestConfigPostOK(t *testing.T) {
+	t.Parallel()
+
 	cfg := bytes.NewBuffer([]byte(`{
 		"version": 15,
 		"folders": [
@@ -684,6 +704,8 @@ func TestConfigPostOK(t *testing.T) {
 }
 
 func TestConfigPostDupFolder(t *testing.T) {
+	t.Parallel()
+
 	cfg := bytes.NewBuffer([]byte(`{
 		"version": 15,
 		"folders": [
@@ -719,6 +741,8 @@ func testConfigPost(data io.Reader) (*http.Response, error) {
 }
 
 func TestHostCheck(t *testing.T) {
+	t.Parallel()
+
 	// An API service bound to localhost should reject non-localhost host Headers
 
 	cfg := new(mockedConfig)
@@ -826,6 +850,11 @@ func TestHostCheck(t *testing.T) {
 
 	// This should all work over IPv6 as well
 
+	if runningInContainer() {
+		// Working IPv6 in Docker can't be taken for granted.
+		return
+	}
+
 	cfg = new(mockedConfig)
 	cfg.gui.RawAddress = "[::1]:0"
 	baseURL, err = startHTTP(cfg)
@@ -872,6 +901,8 @@ func TestHostCheck(t *testing.T) {
 }
 
 func TestAddressIsLocalhost(t *testing.T) {
+	t.Parallel()
+
 	testcases := []struct {
 		address string
 		result  bool
@@ -915,6 +946,8 @@ func TestAddressIsLocalhost(t *testing.T) {
 }
 
 func TestAccessControlAllowOriginHeader(t *testing.T) {
+	t.Parallel()
+
 	const testAPIKey = "foobarbaz"
 	cfg := new(mockedConfig)
 	cfg.gui.APIKey = testAPIKey
@@ -943,6 +976,8 @@ func TestAccessControlAllowOriginHeader(t *testing.T) {
 }
 
 func TestOptionsRequest(t *testing.T) {
+	t.Parallel()
+
 	const testAPIKey = "foobarbaz"
 	cfg := new(mockedConfig)
 	cfg.gui.APIKey = testAPIKey
@@ -976,6 +1011,8 @@ func TestOptionsRequest(t *testing.T) {
 }
 
 func TestEventMasks(t *testing.T) {
+	t.Parallel()
+
 	cfg := new(mockedConfig)
 	defSub := new(mockedEventSub)
 	diskSub := new(mockedEventSub)
@@ -1008,6 +1045,8 @@ func TestEventMasks(t *testing.T) {
 }
 
 func TestBrowse(t *testing.T) {
+	t.Parallel()
+
 	pathSep := string(os.PathSeparator)
 
 	tmpDir, err := ioutil.TempDir("", "syncthing")
@@ -1060,6 +1099,8 @@ func TestBrowse(t *testing.T) {
 }
 
 func TestPrefixMatch(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		s        string
 		prefix   string
@@ -1079,6 +1120,44 @@ func TestPrefixMatch(t *testing.T) {
 	}
 }
 
+func TestCheckExpiry(t *testing.T) {
+	dir, err := ioutil.TempDir("", "syncthing-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	// Self signed certificates expiring in less than a month are errored so we
+	// can regenerate in time.
+	crt, err := tlsutil.NewCertificate(filepath.Join(dir, "crt"), filepath.Join(dir, "key"), "foo.example.com", 29)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkExpiry(crt); err == nil {
+		t.Error("expected expiry error")
+	}
+
+	// Certificates with at least 31 days of life left are fine.
+	crt, err = tlsutil.NewCertificate(filepath.Join(dir, "crt"), filepath.Join(dir, "key"), "foo.example.com", 31)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkExpiry(crt); err != nil {
+		t.Error("expected no error:", err)
+	}
+
+	if runtime.GOOS == "darwin" {
+		// Certificates with too long an expiry time are not allowed on macOS
+		crt, err = tlsutil.NewCertificate(filepath.Join(dir, "crt"), filepath.Join(dir, "key"), "foo.example.com", 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := checkExpiry(crt); err == nil {
+			t.Error("expected expiry error")
+		}
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -1089,4 +1168,25 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// runningInContainer returns true if we are inside Docker or LXC. It might
+// be prone to false negatives if things change in the future, but likely
+// not false positives.
+func runningInContainer() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+
+	bs, err := ioutil.ReadFile("/proc/1/cgroup")
+	if err != nil {
+		return false
+	}
+	if bytes.Contains(bs, []byte("/docker/")) {
+		return true
+	}
+	if bytes.Contains(bs, []byte("/lxc/")) {
+		return true
+	}
+	return false
 }

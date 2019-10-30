@@ -53,11 +53,12 @@ const (
 )
 
 const (
-	bepProtocolName      = "bep/1.0"
-	tlsDefaultCommonName = "syncthing"
-	maxSystemErrors      = 5
-	initialSystemLog     = 10
-	maxSystemLog         = 250
+	bepProtocolName        = "bep/1.0"
+	tlsDefaultCommonName   = "syncthing"
+	maxSystemErrors        = 5
+	initialSystemLog       = 10
+	maxSystemLog           = 250
+	deviceCertLifetimeDays = 20 * 365
 )
 
 const (
@@ -424,7 +425,7 @@ func generate(generateDir string) error {
 	if err == nil {
 		l.Warnln("Key exists; will not overwrite.")
 	} else {
-		cert, err = tlsutil.NewCertificate(certFile, keyFile, tlsDefaultCommonName)
+		cert, err = tlsutil.NewCertificate(certFile, keyFile, tlsDefaultCommonName, deviceCertLifetimeDays)
 		if err != nil {
 			return errors.Wrap(err, "create certificate")
 		}
@@ -491,7 +492,7 @@ func checkUpgrade() upgrade.Release {
 
 func performUpgrade(release upgrade.Release) {
 	// Use leveldb database locks to protect against concurrent upgrades
-	_, err := syncthing.OpenGoleveldb(locations.Get(locations.Database))
+	_, err := syncthing.OpenGoleveldb(locations.Get(locations.Database), config.TuningAuto)
 	if err == nil {
 		err = upgrade.To(release)
 		if err != nil {
@@ -583,7 +584,7 @@ func syncthingMain(runtimeOptions RuntimeOptions) {
 	}
 
 	dbFile := locations.Get(locations.Database)
-	ldb, err := syncthing.OpenGoleveldb(dbFile)
+	ldb, err := syncthing.OpenGoleveldb(dbFile, cfg.Options().DatabaseTuning)
 	if err != nil {
 		l.Warnln("Error opening database:", err)
 		os.Exit(1)
@@ -647,7 +648,9 @@ func syncthingMain(runtimeOptions RuntimeOptions) {
 		}
 	}
 
-	app.Start()
+	if err := app.Start(); err != nil {
+		os.Exit(int(syncthing.ExitError))
+	}
 
 	cleanConfigDirectory()
 

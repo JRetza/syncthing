@@ -35,6 +35,7 @@ func LoadOrGenerateCertificate(certFile, keyFile string) (tls.Certificate, error
 			locations.Get(locations.CertFile),
 			locations.Get(locations.KeyFile),
 			tlsDefaultCommonName,
+			deviceCertLifetimeDays,
 		)
 	}
 	return cert, nil
@@ -122,6 +123,6 @@ func copyFile(src, dst string) error {
 	return nil
 }
 
-func OpenGoleveldb(path string) (*db.Lowlevel, error) {
-	return db.Open(path)
+func OpenGoleveldb(path string, tuning config.Tuning) (*db.Lowlevel, error) {
+	return db.Open(path, db.Tuning(tuning))
 }
